@@ -1,12 +1,16 @@
 #include "ReShade.fxh"
 ///Params
 
+uniform float radius = 0.02f;
 uniform int sample_count = 2;
+
+
+//Samplers
 texture2D CommonTex0 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; };
 sampler2D CommonTexSampler	{ Texture = CommonTex0;	};
 
 texture2D ColorTex 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; MipLevels = 3;};
-texture2D DepthTex 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = R16F;  MipLevels = 3;};
+texture2D DepthTex 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = R16F;  MipLevels = 3;};    //R16F determines wheter or not it's a depth thing
 texture2D NormalTex	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; MipLevels = 3;};
 
 sampler2D ColorTexSampler	{ Texture = ColorTex;	};
@@ -66,27 +70,40 @@ BSAO_VSOUT BSAO_VS(in uint id : SV_VertexID)
 void SetupMaps_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET0, out float4 depth : SV_TARGET1, out float4 normal : SV_TARGET2) 
 {
 
-
-    // Random vector to generate "rays"
     color = tex2D(ReShade::BackBuffer, BSAO.uv.xy);
     depth = ReShade::GetLinearizedDepth(BSAO.uv.xy);
     normal = GetScreenSpaceNormal(BSAO.uv.xy);
-
-    // }
-
-   // result = lerp(BSAO.vpos.xyz, near_point,0.5f);
     
 
 }
 
+
+void StencilPass_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET0){
+
+    color = 1;
+}
+
+
+
 void AOPass_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET){
 
+    //Restores the original ColorTex
+	color = tex2D(ColorTexSampler, BSAO.uv.xy);     
+    float3 normal = GetScreenSpaceNormal(BSAO.uv.xy);
 
-    float3 tempAO = (reflect(float3(1,1,1), GetScreenSpaceNormal(float2(BSAO.uv.x,BSAO.uv.y))));
 
-    float4 tempAO2 = float4(tempAO.xyz, 1f);
+    //Calculate AO
 
-    color *= (tempAO2);
+    float3 ao = reflect(float3(0.1f,0.1f,0.1f), normal).r;      //Uses only r so it's grey-scaled
+
+    color += ao;
+   // float3 firstSample = float3(1, 0, 0),
+
+    //float3 randomDir = reflect(, randN) + viewNorm;
+
+    //float4 ao = 
+    //Applies AO 
+
 }
  void LastPass_PS(in BSAO_VSOUT BSAO, out float4 result : SV_TARGET){
 
@@ -103,26 +120,23 @@ technique BSAO2 {
         RenderTarget0 = ColorTex;
         RenderTarget1 = DepthTex;
         RenderTarget2 = NormalTex;
-        ClearRenderTargets = true;
-		StencilEnable = true;
-	    StencilPass = REPLACE;
-        StencilRef = 1;
+
     }
 
      //Setup of various textures before hand
      pass{
-         VertexShader = BSAO_VS;
-         PixelShader = AOPass_PS;
+        VertexShader = BSAO_VS;
+        PixelShader = StencilPass_PS;
         ClearRenderTargets = true;
 		StencilEnable = true;
-	    StencilPass = REPLACE;
+	    StencilPassOp = REPLACE;
         StencilRef = 1;
      }
 
-    // pass{
-    //     VertexShader = BSAO_VS;
-    //     PixelShader = LastPass_PS;
-    //     RenderTarget = CommonTex0;
+    pass{
+         VertexShader = BSAO_VS;
+         PixelShader = AOPass_PS;
+         //RenderTarget = CommonTex0;
 
-    // }
+     }
 }
