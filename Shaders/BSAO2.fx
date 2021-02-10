@@ -1,40 +1,44 @@
 #include "ReShade.fxh"
-///Params
 
-uniform float radius = 0.02f;
-uniform int sample_count = 2;
+////TEST SHADERS
 
 
-//Samplers
-texture2D CommonTex0 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; };
-sampler2D CommonTexSampler	{ Texture = CommonTex0;	};
+//Parameters
 
-texture2D ColorTex 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; MipLevels = 3;};
-texture2D DepthTex 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = R16F;  MipLevels = 3;};    //R16F determines wheter or not it's a depth thing
-texture2D NormalTex	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; MipLevels = 3;};
+uniform float3 farCorner = 1f;
+uniform float radius = 0.2f;
+uniform float distance = 100f;
+//Structs
 
-sampler2D ColorTexSampler	{ Texture = ColorTex;	};
-sampler2D DepthTexSampler	{ Texture = DepthTex;	};
-sampler2D NormalTexSampler	{ Texture = NormalTex;	};
+struct BSAO_S{
+    uint id : SV_VERTEX_ID;
+    float4 vpos : SV_POSITION;
+    float2 texcoord : TEXCOORD0;
 
-///Helpers Methods
-
-struct BSAO_VSOUT
-{
-	float4                  vpos        : SV_Position;
-    float4                  uv          : TEXCOORD0;
-    // float4                  depth       : SV_TARGET0;
-    // float3                  normal      : SV_TARGET1;
-
-    //For now I've got no idea what this stuff actually does
-    // nointerpolation float   samples     : TEXCOORD1;
-    // nointerpolation float3  uvtoviewADD : TEXCOORD4;
-    // nointerpolation float3  uvtoviewMUL : TEXCOORD5;
 };
 
 
 
-///NORMAL GENERATION
+
+
+//Samplers
+texture2D texColorBuffer { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT; Format = RGBA8;};
+
+texture2D texDepthBuffer	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;};
+sampler2D samplerDepth{ Texture = texDepthBuffer;};
+
+texture2D texAoBuffer 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8;};
+sampler2D samplerAO {Texture = texAoBuffer;};
+
+texture2D texNormalBuffer 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8;};
+sampler2D samplerNormal {Texture = texNormalBuffer;};
+
+texture2D texRandomNormal { Width = BUFFER_WIDTH/4;   Height = BUFFER_HEIGHT/4;   Format = RGBA8;};
+sampler2D samplerRandomNormal {Texture = texRandomNormal;};
+
+//////////////////////////////////////////////////////
+//Helper methods//
+//////////////////////////////////////////////////////
 float3 GetScreenSpaceNormal(float2 texcoord)
 {
 	float3 offset = float3(BUFFER_PIXEL_SIZE, 0.0);
@@ -50,93 +54,120 @@ float3 GetScreenSpaceNormal(float2 texcoord)
 }
 
 
-///
+//////////////////////////////////////////////////////
+/* Vertex Shaders*/
+//////////////////////////////////////////////////////
 
-// Vertex shader generating a triangle covering the entire screen
-BSAO_VSOUT BSAO_VS(in uint id : SV_VertexID)
+BSAO_S BSAO_VS(in uint id : SV_VertexID)
 {
-    BSAO_VSOUT BSAO;
+    BSAO_S BSAO;
 
-    BSAO.uv.x = (id == 2) ? 2.0 : 0.0;
-    BSAO.uv.y = (id == 1) ? 2.0 : 0.0;
-
-	BSAO.vpos = float4(BSAO.uv.xy * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
-    
+	BSAO.texcoord.x = (id == 2) ? 2.0 : 0.0;
+	BSAO.texcoord.y = (id == 1) ? 2.0 : 0.0;
+	BSAO.vpos = float4(BSAO.texcoord * float2(2, -2) + float2(-1, 1), 0, 1);
     return BSAO;
-}
+};
 
+//////////////////////////////////////////////////////
+/* Pixel Shaders*/
+//////////////////////////////////////////////////////
 
-
-void SetupMaps_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET0, out float4 depth : SV_TARGET1, out float4 normal : SV_TARGET2) 
+void BufferPreparation_PS(in BSAO_S BSAO, out float4 depth : SV_TARGET0, out float4 normal : SV_TARGET1, out float4 color : SV_TARGET2)
 {
 
-    color = tex2D(ReShade::BackBuffer, BSAO.uv.xy);
-    depth = ReShade::GetLinearizedDepth(BSAO.uv.xy);
-    normal = GetScreenSpaceNormal(BSAO.uv.xy);
+
+
+    depth = ReShade::GetLinearizedDepth(BSAO.texcoord).rrr;
+    depth.a = 1;
+
+    normal = GetScreenSpaceNormal(BSAO.texcoord.xy);
+    normal.a = 1;
+
+    color = tex2D(ReShade::BackBuffer, BSAO.texcoord);
+
+}
+
+void AORendering_PS(in BSAO_S BSAO, out float4 ao : SV_TARGET0){
+
+    //Using the normals, we're gonna need to read wheter or not there are "collisions" within near objects
+    float3 samples[14] =
+    {
+        float3(1, 0, 0),
+        float3(	-1, 0, 0),
+        float3(0, 1, 0),
+        float3(0, -1, 0),
+        float3(0, 0, 1),
+        float3(0, 0, -1),
+        normalize(float3(1, 1, 1)),
+        normalize(float3(-1, 1, 1)),
+        normalize(float3(1, -1, 1)),
+        normalize(float3(1, 1, -1)),
+        normalize(float3(-1, -1, 1)),
+        normalize(float3(-1, 1, -1)),
+        normalize(float3(1, -1, -1)),
+        normalize(float3(-1, -1, -1))
+    };         
+
+    //todo generate random samples
+    float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
+    float3 randN = tex2D(samplerRandomNormal, BSAO.texcoord * 24).xyz * 2.0 - 1.0;
     
+    //Gets normal
+    float3 normal = tex2D(samplerNormal, BSAO.texcoord);
+    //Gets depth
+    float3 depth = tex2D(samplerDepth, BSAO.texcoord);
 
+    for (int i = 0; i < 4; i++){
+        float3 randomDir = reflect(samples[i], randN) + normal;
+        float4 nuv = float4(BSAO.vpos.xyz + randomDir * radius, 1);
+        nuv.xy /= nuv.w;
+        float zd = saturate(distance * (depth - tex2D(samplerNormal, nuv.xy).x));
+
+        ao += saturate(pow(1 - zd, 3));
+    }
+   // ao.rgb = depth.rgb;
 }
 
 
-void StencilPass_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET0){
 
-    color = 1;
+
+void BSAO_PS (in BSAO_S BSAO, out float4 color : SV_TARGET0)
+{
+
+    color = tex2D(ReShade::BackBuffer, BSAO.texcoord.xy);
+    float4 ao = tex2D(samplerAO, BSAO.texcoord);
+    color = lerp(color,ao,0.1f);
+
+    // if (BSAO.texcoord.x > 0.5f){
+    //     //Gets depth
+    //     float4 depth = ReShade::GetLinearizedDepth(BSAO.texcoord);
+    //     color.rgb = depth.rrr;
+    // } 
+
+    // return color;
 }
-
-
-
-void AOPass_PS(in BSAO_VSOUT BSAO, out float4 color : SV_TARGET){
-
-    //Restores the original ColorTex
-	color = tex2D(ColorTexSampler, BSAO.uv.xy);     
-    float3 normal = GetScreenSpaceNormal(BSAO.uv.xy);
-
-
-    //Calculate AO
-
-    float3 ao = reflect(float3(0.1f,0.1f,0.1f), normal).r;      //Uses only r so it's grey-scaled
-
-    color += ao;
-   // float3 firstSample = float3(1, 0, 0),
-
-    //float3 randomDir = reflect(, randN) + viewNorm;
-
-    //float4 ao = 
-    //Applies AO 
-
-}
- void LastPass_PS(in BSAO_VSOUT BSAO, out float4 result : SV_TARGET){
-
-     result = tex2D(CommonTexSampler, BSAO.uv.xy).rgb;
-
-}   
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
 technique BSAO2 {
-    
+
     pass{
         VertexShader = BSAO_VS;
-        PixelShader = SetupMaps_PS;
-        RenderTarget0 = ColorTex;
-        RenderTarget1 = DepthTex;
-        RenderTarget2 = NormalTex;
-
+        PixelShader = BufferPreparation_PS;
+        RenderTarget0 = texDepthBuffer;
+        RenderTarget1 = texNormalBuffer;
+        RenderTarget2 = texColorBuffer;
     }
 
-     //Setup of various textures before hand
-     pass{
+    pass{
         VertexShader = BSAO_VS;
-        PixelShader = StencilPass_PS;
-        ClearRenderTargets = true;
-		StencilEnable = true;
-	    StencilPassOp = REPLACE;
-        StencilRef = 1;
-     }
+        PixelShader = AORendering_PS;
+        RenderTarget0 = texAoBuffer;
+    }
 
     pass{
-         VertexShader = BSAO_VS;
-         PixelShader = AOPass_PS;
-         //RenderTarget = CommonTex0;
-
-     }
+        VertexShader = BSAO_VS;
+        PixelShader = BSAO_PS;
+    }
+    
 }
