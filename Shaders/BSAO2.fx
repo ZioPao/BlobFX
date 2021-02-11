@@ -109,22 +109,52 @@ void AORendering_PS(in BSAO_S BSAO, out float4 ao : SV_TARGET0){
     };         
 
     //todo generate random samples
-    float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
-    float3 randN = tex2D(samplerRandomNormal, BSAO.texcoord * 24).xyz * 2.0 - 1.0;
-    
-    //Gets normal
-    float3 normal = tex2D(samplerNormal, BSAO.texcoord);
-    //Gets depth
+
+    float3 normal = tex2D(samplerNormal, BSAO.texcoord.xy).xyz * 2.0 - 1.0;         //same here
     float3 depth = tex2D(samplerDepth, BSAO.texcoord);
+    
+    ao = 0;
+    float3 position_to_check = tex2D(samplerDepth, BSAO.texcoord.xy).x;      //Not sure why xyx in MXAO, so let's just try this crap
+    position_to_check += normal * depth;
 
-    for (int i = 0; i < 4; i++){
-        float3 randomDir = reflect(samples[i], randN) + normal;
-        float4 nuv = float4(BSAO.vpos.xyz + randomDir * radius, 1);
-        nuv.xy /= nuv.w;
-        float zd = saturate(distance * (depth - tex2D(samplerNormal, nuv.xy).x));
+    float sample_jitter;
+    sample_jitter = 0.12f;
+    float2 sample_dir;
+    //sincos(2.3999632 * 16 * sample_jitter, sample_dir.x, sample_dir.y); //2.3999632 * 16
+    sample_dir.x = 0.01f;
+    sample_dir.y = 0f;
+    sample_dir *= 7;       //x radius
 
-        ao += saturate(pow(1 - zd, 3));
-    }
+    float2 texcoord_to_check = BSAO.texcoord.xy + sample_dir.xy;
+
+    //This is where the magic begins
+    float3 delta_v = - position_to_check + tex2D(samplerDepth, texcoord_to_check.xy).x;              
+    float v2 = dot(delta_v,delta_v);
+    float vn = dot(delta_v, normal) * rsqrt(v2);
+
+    ao.a += vn;       //Should be equal to color.a
+
+    // ao = 0;
+    // ao.rgb += position_to_check;
+    // ao.a = 1;
+
+    // for (int i = 0; i < 14; i++){
+    //     float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
+
+    //     float3 randN = tex2D(samplerNormal, BSAO.texcoord * 24).xyz * 3.0 - 1.0;
+
+    //     float3 randomDir = reflect(samples[i], randN.xyz) + normal;
+    //     float4 nuv = float4(BSAO.vpos.xyz + randomDir * radius, 1);
+    //     nuv.xy /= nuv.w;
+    //     float zd = saturate(distance * (depth - tex2D(samplerNormal, nuv.xy).x));
+
+    //     ao += zd;
+
+    // }
+    // ao /= 14;
+
+
+    // ao = lerp(ao, float4(1,1,1,1), 0.5f);
    // ao.rgb = depth.rgb;
 }
 
@@ -135,8 +165,12 @@ void BSAO_PS (in BSAO_S BSAO, out float4 color : SV_TARGET0)
 {
 
     color = tex2D(ReShade::BackBuffer, BSAO.texcoord.xy);
+
+    float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
+    float3 randN = tex2D(samplerRandomNormal, BSAO.texcoord * 24).xyz * 2.0 - 1.0;
+    
+
     float4 ao = tex2D(samplerAO, BSAO.texcoord);
-    color = lerp(color,ao,0.1f);
 
     // if (BSAO.texcoord.x > 0.5f){
     //     //Gets depth
@@ -165,9 +199,9 @@ technique BSAO2 {
         RenderTarget0 = texAoBuffer;
     }
 
-    pass{
-        VertexShader = BSAO_VS;
-        PixelShader = BSAO_PS;
-    }
+    // pass{
+    //     VertexShader = BSAO_VS;
+    //     PixelShader = BSAO_PS;
+    // }
     
 }
