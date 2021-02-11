@@ -106,7 +106,7 @@ void First_Pass_PS(in GB_S gb, out float4 color : SV_TARGET0){
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-technique GaussianBlurTest {
+technique Artifacts {
 
     pass{
         VertexShader = PostProcessVS;
