@@ -8,6 +8,7 @@
 uniform int num_of_samples = 14;
 uniform float ray_length = 2;
 uniform float ao_strength = 2f;
+uniform float distance = 1;
 uniform float blend = 0.1f;
 //Structs
 struct BSAO_S{
@@ -102,15 +103,13 @@ void BufferPreparationPass_PS(in BSAO_S BSAO, out float4 depth : SV_TARGET0, out
 
 void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET0){
 
-    float max_distance = 0.1;
     float temp_depth = tex2D(sampler_tex_depth, bsao.texcoord).r;
-    
-    
-    if (temp_depth > max_distance){
+
+    if (temp_depth > distance){
         discard;
     }
+    corrected_depth = 1;
 
-        corrected_depth = 1;
 
     
 
@@ -120,15 +119,16 @@ void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET
 void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 
     //Calculate near points in the normal and search for collisions
-    static const float3 samples[7] =
+    static const float3 samples[1] =
     {
-        float3(0.11, 0.12, 0.42),
-        float3(	0.2, 0.1, 0.4),
-        float3(0.13154, 0.512, 0.1864),
-        float3(0.152, -0.231, -0.124),
-        float3(0.21, -0.75, 1),
-        float3(-0.14, 0.54, -0.021),
-        normalize(float3(0.5, 0.2, -1.1)),
+        //Closer and then more distant
+        float3(1, 1, 1),
+        //  float3(	0.22, 0.22, 0.22),
+        //  float3(0.33, 0.33, 0.33),
+        // float3(0.152, -0.231, -0.124),
+        // float3(0.21, -0.75, 1),
+        // float3(-0.14, 0.54, -0.021),
+        // normalize(float3(0.5, 0.2, -1.1)),
         // normalize(float3(-1, 1, 1)),
         // normalize(float3(1, -1, 1)),
         // normalize(float3(1, 1, -1)),
@@ -137,26 +137,47 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
         // normalize(float3(1, -1, -1)),
         // normalize(float3(-1, -1, -1))
     };
+
+
+
+    static const float2 mul_dot = float2(2,2);
     ao = 0;
-
-
     float temp_ao = 0;
 
     float3 normal = tex2D(sampler_tex_normal, bsao.texcoord).rgb;
-    float3 normal_fixed = tex2D(sampler_tex_corrected_depth, bsao.texcoord).rrr - normal.rgb; 
+    float corrected_depth = tex2D(sampler_tex_corrected_depth, bsao.texcoord);
+    float3 normal_fixed = corrected_depth.rrr - normal.rgb; 
 
     for (int i = 0; i < num_of_samples; i++){
         
-        float2 ray = reflect(samples[i], normal_fixed);
-        float2 corrected_coords = (bsao.texcoord * ReShade::PixelSize.x) + (ray * ray_length);
-        temp_ao += (tex2D(sampler_tex_corrected_depth, corrected_coords).rrr - normal.rgb) / ao_strength; 
+
+        // We need a random vector to reflect on
+
+        //float3 ray = reflect(samples[i] * ray_length, (normalize(normal_fixed))) ;
+        float3 ray = reflect(samples[i], normal_fixed);
+        //Calculate how far the ray hits
+
+        float ray_mod = dot(ray, ray_length);
+        float z_result = saturate(corrected_depth - normal_fixed).z * ray_mod;
+        //float z_depth = saturate(distance * (corrected_depth - normal_fixed).x);
+
+
+
+        temp_ao += pow(z_result, ao_strength);
+        //temp_ao += saturate(pow(1-z_depth, ao_strength) + z_depth);
+        //float2 ray = reflect(samples[i].xz, normalize(normal_fixed.xy)) * ray_length;
+        //float2 ray2 = dot(samples[i].xy, float2(1.1,1.5));
+        // float2 corrected_coords = (bsao.texcoord.xy * ReShade::PixelSize.xy) + ray;
+        // temp_ao += (tex2D(sampler_tex_depth, corrected_coords).rrr - normal.rgb); 
     }
 
-    //ao /= num_of_samples;
-
-
-    ao =  -(temp_ao/num_of_samples);    //negated to let it go black on white (i know it's crap)
+    ao = temp_ao/num_of_samples;
     ao.a = 1;
+
+    // temp_ao = pow(temp_ao, ao_strength);
+    // temp_ao /= num_of_samples;
+    // ao = saturate(temp_ao);
+    // ao.a = 1;
     
     //float3 modded_normal = ReShade::GetLinearizedDepth(bsao.texcoord) * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE;;
     //ao = modded_normal;
@@ -173,8 +194,9 @@ void FinalPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET){
     target = tex2D(sampler_tex_backbuffer, bsao.texcoord);
     float3 ao = tex2D(sampler_tex_ao, bsao.texcoord);
 
-
-    target.rgb = saturate(lerp(target.rgb, ao.rgb, blend));
+    //ao = pow(ao.rgb, 1.2);
+    
+    target.rgb = saturate(lerp(target.rgb, -saturate(ao.rgb), blend));
 
 
 }
