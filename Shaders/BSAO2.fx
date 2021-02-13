@@ -5,15 +5,18 @@
 
 //Parameters
 
-uniform int num_of_samples = 14;
+uniform int num_of_samples = 3;
 uniform float ray_length = 2;
+uniform float rad = 0.45f;
 uniform float ao_strength = 2f;
-uniform float distance = 1;
+uniform float distance = 0.5f;      //ok
 uniform float blend = 0.1f;
+
+
 //Structs
 struct BSAO_S{
-    uint id : SV_VERTEX_ID;
-    float4 vpos : SV_POSITION;
+    uint id : SV_VERTEX_ID;         //id of the current vertex
+    float4 vpos : SV_POSITION;      //Screen Space Coordinates
     float2 texcoord : TEXCOORD;     //Main one
 
 };
@@ -76,54 +79,49 @@ float3 GetScreenSpaceNormal(float2 texcoord)
 
 BSAO_S BSAO_VS(in uint id : SV_VertexID)
 {
-    BSAO_S BSAO;
+    BSAO_S bsao;
 
-	BSAO.texcoord.x = (id == 2) ? 2.0 : 0.0;
-	BSAO.texcoord.y = (id == 1) ? 2.0 : 0.0;
-	BSAO.vpos = float4(BSAO.texcoord * float2(2, -2) + float2(-1, 1), 0, 1);
-    return BSAO;
+	bsao.texcoord.x = (id == 2) ? 2.0 : 0.0;
+	bsao.texcoord.y = (id == 1) ? 2.0 : 0.0;
+	bsao.vpos = float4(bsao.texcoord.xy * float2(2, -2) + float2(-1, 1), 0, 1);
+
+
+    return bsao;
 };
 
 //////////////////////////////////////////////////////
 /* Pixel Shaders*/
 //////////////////////////////////////////////////////
 
-void BufferPreparationPass_PS(in BSAO_S BSAO, out float4 depth : SV_TARGET0, out float4 normal : SV_TARGET1, out float4 back_buffer : SV_TARGET2)
+void BufferPreparationPass_PS(in BSAO_S bsao, out float4 back_buffer : SV_TARGET0, out float4 depth : SV_TARGET1, out float4 normal : SV_TARGET2)
 {
-
-
-    normal = GetScreenSpaceNormal(BSAO.texcoord.xy).rgb;
-
-    back_buffer = tex2D(ReShade::BackBuffer, BSAO.texcoord);
-
-    depth = ReShade::GetLinearizedDepth(BSAO.texcoord).rrr;
-    depth.a = 1;
+    back_buffer = tex2D(ReShade::BackBuffer, bsao.texcoord.xy).rgba;
+    depth = ReShade::GetLinearizedDepth(bsao.texcoord.xy).rrrr;
+    normal = GetScreenSpaceNormal(bsao.texcoord.xy).rgb;
+    
 
 }
 
+/* Check distance for the depth and then discards it if it exceeds it */
 void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET0){
 
-    float temp_depth = tex2D(sampler_tex_depth, bsao.texcoord).r;
+    float temp_depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
 
     if (temp_depth > distance){
         discard;
     }
     corrected_depth = 1;
-
-
-    
-
-
 }
 
 void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 
     //Calculate near points in the normal and search for collisions
-    static const float3 samples[1] =
+    static const float3 samples[3] =
     {
         //Closer and then more distant
-        float3(1, 1, 1),
-        //  float3(	0.22, 0.22, 0.22),
+        float3(0.9958, -0.853, -0.434),
+        float3(-0.5152, +0.41248, 0.503),
+        float3(0.34, 0.123, 0.552),
         //  float3(0.33, 0.33, 0.33),
         // float3(0.152, -0.231, -0.124),
         // float3(0.21, -0.75, 1),
@@ -138,174 +136,108 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
         // normalize(float3(-1, -1, -1))
     };
 
-
-
-    static const float2 mul_dot = float2(2,2);
     ao = 0;
-    float temp_ao = 0;
 
-    float3 normal = tex2D(sampler_tex_normal, bsao.texcoord).rgb;
-    float corrected_depth = tex2D(sampler_tex_corrected_depth, bsao.texcoord);
-    float3 normal_fixed = corrected_depth.rrr - normal.rgb; 
-
-    for (int i = 0; i < num_of_samples; i++){
-        
-
-        // We need a random vector to reflect on
-
-        //float3 ray = reflect(samples[i] * ray_length, (normalize(normal_fixed))) ;
-        float3 ray = reflect(samples[i], normal_fixed);
-        //Calculate how far the ray hits
-
-        float ray_mod = dot(ray, ray_length);
-        float z_result = saturate(corrected_depth - normal_fixed).z * ray_mod;
-        //float z_depth = saturate(distance * (corrected_depth - normal_fixed).x);
+    float3 current_pos = bsao.vpos.xyz;
 
 
 
-        temp_ao += pow(z_result, ao_strength);
-        //temp_ao += saturate(pow(1-z_depth, ao_strength) + z_depth);
-        //float2 ray = reflect(samples[i].xz, normalize(normal_fixed.xy)) * ray_length;
-        //float2 ray2 = dot(samples[i].xy, float2(1.1,1.5));
-        // float2 corrected_coords = (bsao.texcoord.xy * ReShade::PixelSize.xy) + ray;
-        // temp_ao += (tex2D(sampler_tex_depth, corrected_coords).rrr - normal.rgb); 
+    float depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
+
+    float3 p = (depth/bsao.vpos.z)*bsao.vpos;
+
+    float4 normal = tex2D(sampler_tex_normal, bsao.texcoord.xy);
+
+    //First check to eliminate the sky or sup like that
+    if (normal.a < 1){
+
+        //check on the normal with a "random" ray
+        for (int i = 0; i < num_of_samples; i++){
+            float3 ray = samples[i] - 3;
+            //ray = dot(ray, float3(-0.5f,-0.5f,0.12f));
+            ao += tex2D(sampler_tex_normal, -bsao.texcoord.xy + ray.xz).rrr;
+        }
+
     }
 
-    ao = temp_ao/num_of_samples;
-    ao.a = 1;
+    ao = p;
 
-    // temp_ao = pow(temp_ao, ao_strength);
-    // temp_ao /= num_of_samples;
-    // ao = saturate(temp_ao);
-    // ao.a = 1;
     
-    //float3 modded_normal = ReShade::GetLinearizedDepth(bsao.texcoord) * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE;;
-    //ao = modded_normal;
+/*
+    float3 corrected_depth = tex2D(sampler_tex_corrected_depth, bsao.texcoord.xy).rrr;
+    float3 normal_fixed = corrected_depth - normal.rrr; 
 
-    //we need to limit the normal map
+    for (int i = 0; i < num_of_samples; i++){
+
+        float4 sample_pos = float4(current_pos +samples[i], 1f);
+        sample_pos.z = normal * sample_pos;
+        sample_pos.xy /= sample_pos.w;
+        sample_pos.xy = sample_pos.xy * 0.5 + float2(0.5f, 0.5f);
+        float sample_depth = tex2D(sampler_tex_depth, sample_pos.xy).r;
+
+        if (abs(bsao.vpos.z - sample_depth) < rad) {
+            ao += step(sample_depth,sample_pos.z);
+        }
+        // float3 incident_ray = saturate(reflect(samples[i], normal_fixed) * ray_length);
+        // float3 shitty_test = tex2D(sampler_tex_corrected_depth, (bsao.texcoord.xz * ReShade::PixelSize.x)  + incident_ray.xz).rrr;
 
 
+        // // We need a random vector to reflect on
+        // float3 ray = reflect(samples[i], normal_fixed);
+        // float3 normal_result = dot(ray * ray_length, normal_fixed);
+        // float z_result = saturate(corrected_depth - normal_fixed).z * ray.xyz;
+        // temp_ao -= pow(normal_result, ao_strength);
+       
+    }
 
+    ao = pow(ao,4).r;
+
+*/
+    //ao = 1;
+   // ao.a = 1;
+    // ao = pow(ao,ao_strength);
+    // ao /= num_of_samples;
+    // ao.a = 1;
 }
 
 
 void FinalPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET){
 
-    target = tex2D(sampler_tex_backbuffer, bsao.texcoord);
-    float3 ao = tex2D(sampler_tex_ao, bsao.texcoord);
+    target = tex2D(sampler_tex_backbuffer, bsao.texcoord.xy);
+    // float ao = tex2D(sampler_tex_ao, bsao.texcoord.xy).r;
 
-    //ao = pow(ao.rgb, 1.2);
+    // //ao = pow(ao.rgb, 1.2);
     
-    target.rgb = saturate(lerp(target.rgb, -saturate(ao.rgb), blend));
+    // target.rgb = saturate(lerp(target.rgb, -saturate(ao.r), blend));
 
 
 }
-
-// void AORendering_PS(in BSAO_S BSAO, out float4 ao : SV_TARGET0){
-
-//     //Using the normals, we're gonna need to read wheter or not there are "collisions" within near objects
-
-
-//     //todo generate random samples
-
-//     float3 normal = tex2D(samplerNormal, BSAO.texcoord.xy).xyz * 2.0 - 1.0;         //same here
-//     float3 depth = tex2D(samplerDepth, BSAO.texcoord);
-    
-//     ao = 0;
-//     float3 position_to_check = tex2D(samplerDepth, BSAO.texcoord.xy).x;      //Not sure why xyx in MXAO, so let's just try this crap
-//     position_to_check += normal * depth;
-
-//     float sample_jitter;
-//     sample_jitter = 0.12f;
-//     float2 sample_dir;
-//     //sincos(2.3999632 * 16 * sample_jitter, sample_dir.x, sample_dir.y); //2.3999632 * 16
-//     sample_dir.x = 0.01f;
-//     sample_dir.y = 0f;
-//     sample_dir *= 7;       //x radius
-
-//     float2 texcoord_to_check = BSAO.texcoord.xy + sample_dir.xy;
-
-//     //This is where the magic begins
-//     float3 delta_v = - position_to_check + tex2D(samplerDepth, texcoord_to_check.xy).x;              
-//     float v2 = dot(delta_v,delta_v);
-//     float vn = dot(delta_v, normal) * rsqrt(v2);
-
-//     ao.a += vn;       //Should be equal to color.a
-
-//     // ao = 0;
-//     // ao.rgb += position_to_check;
-//     // ao.a = 1;
-
-//     // for (int i = 0; i < 14; i++){
-//     //     float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
-
-//     //     float3 randN = tex2D(samplerNormal, BSAO.texcoord * 24).xyz * 3.0 - 1.0;
-
-//     //     float3 randomDir = reflect(samples[i], randN.xyz) + normal;
-//     //     float4 nuv = float4(BSAO.vpos.xyz + randomDir * radius, 1);
-//     //     nuv.xy /= nuv.w;
-//     //     float zd = saturate(distance * (depth - tex2D(samplerNormal, nuv.xy).x));
-
-//     //     ao += zd;
-
-//     // }
-//     // ao /= 14;
-
-
-//     // ao = lerp(ao, float4(1,1,1,1), 0.5f);
-//    // ao.rgb = depth.rgb;
-// }
-
-
-
-
-// void BSAO_PS (in BSAO_S BSAO, out float4 color : SV_TARGET0)
-// {
-
-//     color = tex2D(ReShade::BackBuffer, BSAO.texcoord.xy);
-
-//     float3 ray = farCorner * float3(sign(BSAO.vpos.xy), 1);  //Got from Stuntrally repo
-//     float3 randN = tex2D(samplerRandomNormal, BSAO.texcoord * 24).xyz * 2.0 - 1.0;
-    
-
-//     float4 ao = tex2D(samplerAO, BSAO.texcoord);
-
-//     // if (BSAO.texcoord.x > 0.5f){
-//     //     //Gets depth
-//     //     float4 depth = ReShade::GetLinearizedDepth(BSAO.texcoord);
-//     //     color.rgb = depth.rrr;
-//     // } 
-
-//     // return color;
-// }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 
 technique BSAO2 {
 
     pass{
         VertexShader = BSAO_VS;
         PixelShader = BufferPreparationPass_PS;
-        RenderTarget0 = tex_depth;
-        RenderTarget1 = tex_normal;
-        RenderTarget2 = tex_backbuffer;
+        RenderTarget0 = tex_backbuffer;
+        RenderTarget1 = tex_depth;
+        RenderTarget2 = tex_normal;
     }
-    pass{
+     pass{
         VertexShader = BSAO_VS;
-        PixelShader = DepthDistancePass_PS;
-        RenderTarget0 = tex_corrected_depth;
-        ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
+         PixelShader = DepthDistancePass_PS;
+         RenderTarget0 = tex_corrected_depth;
+         ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
 		
-    }
-    pass{
-        VertexShader = BSAO_VS;
-        PixelShader = AoPreparationPass_PS;
-        RenderTarget0 = tex_ao;
-    } 
+     }
+     pass{
+         VertexShader = BSAO_VS;
+         PixelShader = AoPreparationPass_PS;
+         RenderTarget0 = tex_ao;
+     } 
 
-    pass{
-        VertexShader = BSAO_VS;
-        PixelShader = FinalPass_PS;
+    // pass{
+    //     VertexShader = BSAO_VS;
+    //     PixelShader = FinalPass_PS;
 
-    }
+    // }
 }
