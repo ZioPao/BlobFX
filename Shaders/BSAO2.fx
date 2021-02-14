@@ -6,12 +6,17 @@
 //Parameters
 
 uniform int num_of_samples = 3;
-uniform float ray_length = 2;
-uniform float rad = 0.45f;
+uniform float noise_amount = 1f;
+uniform float radius = 2f;
+uniform float ao_clamp = 0.125f;
+uniform float gauss_bell_center = 0.4f; //gauss bell center //0.4
+uniform float diff_area = 0.3f; //self-shadowing reduction
+// uniform float ray_length = 2;
+// uniform float rad = 0.45f;
 uniform float ao_strength = 2f;
 uniform float distance = 0.5f;      //ok
 uniform float blend = 0.1f;
-
+uniform float lumInfluence = 0.7f; //how much luminance affects occlusion
 
 //Structs
 struct BSAO_S{
@@ -73,6 +78,47 @@ float3 GetScreenSpaceNormal(float2 texcoord)
 }
 
 
+float CompareDepths(float depth_1, float depth_2){
+
+    float area = 2f;
+
+    float diff = (depth_1 - depth_2) * 100.0f;
+
+    if (diff < gauss_bell_center){
+        area = diff_area;
+    }
+
+    float gauss = pow(2.7182, -2.0*(diff - gauss_bell_center) * (diff - gauss_bell_center)/(area*area));
+    return gauss;
+}
+
+
+bool CompareDepthsFar(float depth_1, float depth_2){
+
+    float area = 2f;
+
+    float diff = (depth_1 - depth_2) * 100.0f;
+
+    if (diff > gauss_bell_center)
+        return true;
+    else
+        return false;
+
+}
+
+float2 rand_noise(float2 coord) //generating noise/pattern texture for dithering
+{
+  float noiseX = ((frac(1.0-coord.x*(ReShade::PixelSize.x/2.0))*0.25)+(frac(coord.y*(ReShade::PixelSize.y/2.0))*0.75))*2.0-1.0;
+  float noiseY = ((frac(1.0-coord.x*(ReShade::PixelSize.x/2.0))*0.75)+(frac(coord.y*(ReShade::PixelSize.y/2.0))*0.25))*2.0-1.0;
+
+noiseX = clamp(frac(sin(dot(coord ,float2(12.9898,78.233))) * 43758.5453),0.0,1.0)*2.0-1.0;
+noiseY = clamp(frac(sin(dot(coord ,float2(12.9898,78.233)*2.0)) * 43758.5453),0.0,1.0)*2.0-1.0;
+  
+  return float2(noiseX,noiseY) * noise_amount;
+}
+
+
+
 //////////////////////////////////////////////////////
 /* Vertex Shaders*/
 //////////////////////////////////////////////////////
@@ -107,60 +153,136 @@ void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET
 
     float temp_depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
 
-    if (temp_depth > distance){
-        discard;
-    }
-    corrected_depth = 1;
+     if (temp_depth > distance){
+         discard;
+     }
+     corrected_depth = 1;
 }
 
 void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 
-    //Calculate near points in the normal and search for collisions
-    static const float3 samples[3] =
-    {
-        //Closer and then more distant
-        float3(0.9958, -0.853, -0.434),
-        float3(-0.5152, +0.41248, 0.503),
-        float3(0.34, 0.123, 0.552),
-        //  float3(0.33, 0.33, 0.33),
-        // float3(0.152, -0.231, -0.124),
-        // float3(0.21, -0.75, 1),
-        // float3(-0.14, 0.54, -0.021),
-        // normalize(float3(0.5, 0.2, -1.1)),
-        // normalize(float3(-1, 1, 1)),
-        // normalize(float3(1, -1, 1)),
-        // normalize(float3(1, 1, -1)),
-        // normalize(float3(-1, -1, 1)),
-        // normalize(float3(-1, 1, -1)),
-        // normalize(float3(1, -1, -1)),
-        // normalize(float3(-1, -1, -1))
-    };
 
-    ao = 0;
+    //   static const float3 samples[3] =
+    //  {
+    //      //Closer and then more distant
+    //      float3(0.9958, -0.853, -0.434),
+    //      float3(-0.5152, +0.41248, 0.503),
+    //      float3(0.34, 0.123, 0.552)};
 
-    float3 current_pos = bsao.vpos.xyz;
+    float PI = 3.14159265f;
+    float dl = PI * (3.0 - sqrt(5.0));    
+    float dz = 1/num_of_samples;
+    float l = 0;
+    float z = 1 - dz/2;         //Wut
 
 
+    float normal = tex2D(sampler_tex_normal, bsao.texcoord.xy).r;
 
-    float depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
+    float temp_1 = 0f;
+    float temp_2 = 0f;;
+    float dd = (1.0-normal)*radius;
+    float2 noise_var = rand_noise(bsao.texcoord);
 
-    float3 p = (depth/bsao.vpos.z)*bsao.vpos;
 
-    float4 normal = tex2D(sampler_tex_normal, bsao.texcoord.xy);
+    for (int i = 0; i < num_of_samples; i++){
+        float r = sqrt(1.0 - z);
+        float pw = cos(l) * r;
+        float ph = sin(l) * r;
+        
+        float w = (1.0 / ReShade::PixelSize.x)/clamp(normal,ao_clamp,1.0)+(noise_var.x*(1.0-noise_var.x));
+        float h = (1.0 / ReShade::PixelSize.y)/clamp(normal,ao_clamp,1.0)+(noise_var.y*(1.0-noise_var.y));
+        float mod_w = pw*w*dd;
+        float mod_h = ph*h*dd;
 
-    //First check to eliminate the sky or sup like that
-    if (normal.a < 1){
 
-        //check on the normal with a "random" ray
-        for (int i = 0; i < num_of_samples; i++){
-            float3 ray = samples[i] - 3;
-            //ray = dot(ray, float3(-0.5f,-0.5f,0.12f));
-            ao += tex2D(sampler_tex_normal, -bsao.texcoord.xy + ray.xz).rrr;
+       
+        float2 coord_1 = float2(bsao.texcoord.x + mod_w, bsao.texcoord.y + mod_h);
+        float2 coord_2 = float2(bsao.texcoord.x - mod_w, bsao.texcoord.y - mod_h);
+
+
+        float depth_1 = tex2D(sampler_tex_normal, coord_1);
+        float depth_2 = tex2D(sampler_tex_normal, coord_2);
+
+
+        if (CompareDepthsFar(depth_2, depth_1)){
+            temp_2 = CompareDepths(depth_2, depth_1);
+            temp_1 += (1.0f - temp_1)*temp_2;
+            ao += temp_1;
         }
+        
+        z = z - dz;
+        l = l + dl;
+
+       // ao += tex2D(sampler_tex_normal, bsao.vpos.xy);
 
     }
 
-    ao = p;
+
+    ao /= num_of_samples;
+    ao *= ao_strength;
+    ao = 1 - ao;
+    ao.a = 1;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    //Calculate near points in the normal and search for collisions
+
+    //     //  float3(0.33, 0.33, 0.33),
+    //     // float3(0.152, -0.231, -0.124),
+    //     // float3(0.21, -0.75, 1),
+    //     // float3(-0.14, 0.54, -0.021),
+    //     // normalize(float3(0.5, 0.2, -1.1)),
+    //     // normalize(float3(-1, 1, 1)),
+    //     // normalize(float3(1, -1, 1)),
+    //     // normalize(float3(1, 1, -1)),
+    //     // normalize(float3(-1, -1, 1)),
+    //     // normalize(float3(-1, 1, -1)),
+    //     // normalize(float3(1, -1, -1)),
+    //     // normalize(float3(-1, -1, -1))
+    // };
+
+    // ao = 0;
+
+    // float3 current_pos = bsao.vpos.xyz;
+    
+
+
+    // float depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
+
+    // float3 p = (depth/bsao.vpos.z)*bsao.vpos;
+
+    // float4 normal = tex2D(sampler_tex_normal, bsao.texcoord.xy);
+
+    // //First check to eliminate the sky or sup like that
+    // if (normal.a < 1){
+
+    //     //check on the normal with a "random" ray
+    //     for (int i = 0; i < num_of_samples; i++){
+    //         float3 ray = samples[i] - 3;
+    //         //ray = dot(ray, float3(-0.5f,-0.5f,0.12f));
+    //         ao += tex2D(sampler_tex_normal, -bsao.texcoord.xy + ray.xz).rrr;
+    //     }
+
+    // }
+
+    // ao = p;
 
     
 /*
@@ -204,11 +326,26 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 void FinalPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET){
 
     target = tex2D(sampler_tex_backbuffer, bsao.texcoord.xy);
-    // float ao = tex2D(sampler_tex_ao, bsao.texcoord.xy).r;
+
+    float ao = tex2D(sampler_tex_ao, bsao.texcoord.xy).r;
+
+    float3 lumcoeff = float3(0.299,0.587,0.114);
+    float lum = dot(target.rgb, lumcoeff);
+    float3 luminance = float3(lum, lum, lum);
+
+
+    float4 mixed_result = float4(lerp (float3(ao.rrr), float3(1,1,1), luminance*lumInfluence),1);
+    target = target * mixed_result;
+    //target = float4(target*lerp(float3(ao),float3(1.0),),1);//mix(color*ao, white, luminance)
+
+
+
+
+
 
     // //ao = pow(ao.rgb, 1.2);
     
-    // target.rgb = saturate(lerp(target.rgb, -saturate(ao.r), blend));
+     //target.rgb = saturate(lerp(target.rgb, -saturate(ao.r), blend));
 
 
 }
@@ -222,22 +359,22 @@ technique BSAO2 {
         RenderTarget1 = tex_depth;
         RenderTarget2 = tex_normal;
     }
-     pass{
-        VertexShader = BSAO_VS;
-         PixelShader = DepthDistancePass_PS;
-         RenderTarget0 = tex_corrected_depth;
-         ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
+      pass{
+         VertexShader = BSAO_VS;
+          PixelShader = DepthDistancePass_PS;
+          RenderTarget0 = tex_corrected_depth;
+          ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
 		
-     }
+    }
      pass{
          VertexShader = BSAO_VS;
          PixelShader = AoPreparationPass_PS;
          RenderTarget0 = tex_ao;
      } 
 
-    // pass{
-    //     VertexShader = BSAO_VS;
-    //     PixelShader = FinalPass_PS;
+     pass{
+         VertexShader = BSAO_VS;
+         PixelShader = FinalPass_PS;
 
-    // }
+     }
 }
