@@ -190,15 +190,93 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
 
 */
  
-       float3 samples[6] = {float3(0.01521, 0.12447, 0.09449),
+ //Values too low?
+/*        float3 samples[7] = {float3(0.01521, 0.12447, 0.09449),
                         float3(0.03491, 0.04310, 0.01063),
                         float3(0.07913, 0.04670, 0.07554),
-                        float3(0.29996, 0.08449, 0.10183),
-                        float3(0.18446, 0.25253, 0.03900),
-                        float3(0.03799, 0.09218, 0.15440),};   
+                        float3(0.19996, 0.08449, 0.10183),
+                        float3(0.18446, 0.15253, 0.03900),
+                        float3(0.03799, 0.09218, 0.15440),
+                        float3(0.09713, 0.14170, 0.27554),};    */
 
 
-    /* float3 samples[6] = {float3(0,1f,0),
+
+
+
+    float2 samples[26] = {       float2(0.03491, 0.04310),
+                            float2(0.07913, 0.04670),
+                            float2(0.19996, 0.08449),
+                            float2(0.18446, 0.15253),
+                            float2(0.09713, 0.14170),
+                            float2(0.90722, 0.92484),
+                  
+                            float2(1.1f, 2.1f),
+                            float2(2.1f, 5.1f),
+                            float2(2.5, 1.9f),
+                            float2(6.13293, 5.75987),
+                            float2(-1.65063, 9.29245),
+                            float2(8.38166, 5.30451),
+                            float2(0.03799, -0.09218),
+                            float2(-6.44015, 3.41690),
+                            float2(1.37779, -4.50609),
+                            float2(0.01521, 0.12447),
+                            float2(-0.03491, 0.04310),
+                            float2(0.07913, -0.04670),
+                            float2(0.19996, -0.08449),
+                            float2(0.18446, 0.15253),
+                            float2(-0.09713, 0.14170),
+                            float2(0.90722, 7.92484),
+                            float2(-7.61085, 8.64040),
+                            float2(5.07657, 7.42778),
+                            float2(11.29401, 10.41430),
+                            float2(13.68830, 8.99593)};
+    float weigth[7] = {1f,0.9f,0.8f,0.7f,0.6f,0.5f, 0.4f};
+
+
+ 
+    ////////////////////////////////////////////////////////
+    float ao =0;
+
+
+    //////////////////////////////////////////////////////////
+    //Get normal from the texcoord
+    ////////////////////////////////////////////////////////
+
+    float3 normal = normalize(tex2D(sampler_tex_corrected_depth, bsao.texcoord));
+
+    //Samples are used to cast "rays"
+
+
+    for (int i = 0; i < num_of_samples; i++){
+        
+        
+
+        float2 scaled_sample = float2(samples[i].x * ReShade::PixelSize.x , samples[i].y * ReShade::PixelSize.y) ;
+        float2 sample_point_pos = (bsao.texcoord.xy + scaled_sample)  ;
+        float2 sample_point_neg = (bsao.texcoord.xy - scaled_sample) * 1/(i+1) ;
+
+        //Check distance and angle
+
+
+        float3 first_normal_mod = (tex2D(sampler_tex_corrected_depth, sample_point_pos));
+        float3 second_normal_mod = (tex2D(sampler_tex_corrected_depth, sample_point_neg));
+
+
+        if (normal.z < first_normal_mod.z + bias){
+            ao++;
+        }
+/*         if (normal.z > second_normal_mod.z + bias){
+            ao++;
+        } */
+
+
+    }
+    ao /= num_of_samples;
+    target = pow(ao,strength);
+    target.a = 1;
+
+
+   /* float3 samples[6] = {float3(0,1f,0),
                             float3(-1f,0,0),
                             float3(0f,0f,1f),
                             float3(-1f,1f,1f),
@@ -207,44 +285,8 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
  */
 
     
-    ////////////////////////////////////////////////////////
-    float ao = 0;
-
-
-    //////////////////////////////////////////////////////////
-    //Get normal from the texcoord
-    ////////////////////////////////////////////////////////
-
-    float3 normal = tex2D(sampler_tex_normal, bsao.texcoord);
-
-    //Samples are used to cast "rays"
-
-
-    for (int i = 0; i < num_of_samples; i++){
-
-        float2 sample_point_pos = (bsao.texcoord.xy + samples[i].xy);
-        float2 sample_point_neg = (bsao.texcoord.xy - samples[i].xy);
-
-        //Check distance and angle
-
-
-        float3 normal_mod = tex2D(sampler_tex_corrected_depth, normalize(sample_point_pos));
-
-
-        if (normal.z < normal_mod.z + bias){
-            ao++;
-        }
-
-
-    }
-    ao /= num_of_samples;
-    target = ao;
-
-
-
 /*     //float3 samples[2] = {float3(0f,0f,0f), float3(0f,0.01f,0.0f)};
 
-    float weigth[6] = {1f,0.9f,0.8f,0.7f,0.6f,0.5f};
     float horizontal_fov = vertical_fov * ReShade::AspectRatio;
     float PI = 3.14159265359f;
     float vertical_fov_rad = vertical_fov * PI/180;
