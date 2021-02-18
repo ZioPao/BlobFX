@@ -11,7 +11,7 @@ uniform float bias = 1f;
 uniform float gOcclusionFadeEnd = 100;
 ////uniform float gOcclusionFadeStart = 0;
 // uniform float noise_amount = 1f;
-uniform float radius = 1f;
+uniform float ray_radius = 1f;
 // uniform float ao_clamp = 0.125f;
 // uniform float gauss_bell_center = 0.4f; //gauss bell center //0.4
 // uniform float diff_area = 0.3f; //self-shadowing reduction
@@ -81,59 +81,18 @@ float3 GetScreenSpaceNormal(float2 texcoord)
 }
 
 
-float3 PseudoRandomVec(float3 coord){
+float2 PseudoRandomVec(float2 coord){
 
 
     float x = frac(sin(dot(coord.x, float2(12.9898, 78.233))) * 43758.5453);
     float y = frac(sin(dot(coord.y, float2(12.9898, 78.233))) * 43758.5453);
-    float z = frac(sin(dot(coord.z, float2(12.9898, 78.233))) * 43758.5453);
 
-    return saturate(float3(x, y, z));
+    return saturate(float2(x, y));
 
 
 
 }
-// Determines how much the sample point q occludes the point p as a function
-// of distZ.
-float OcclusionFunction(float distZ)
-{
-	//
-	// If depth(q) is "behind" depth(p), then q cannot occlude p.  Moreover, if 
-	// depth(q) and depth(p) are sufficiently close, then we also assume q cannot
-	// occlude p because q needs to be in front of p by Epsilon to occlude p.
-	//
-	// We use the following function to determine the occlusion.  
-	// 
-	//
-	//       1.0     -------------\
-	//               |           |  \
-	//               |           |    \
-	//               |           |      \ 
-	//               |           |        \
-	//               |           |          \
-	//               |           |            \
-	//  ------|------|-----------|-------------|---------|--> zv
-	//        0     Eps          z0            z1        
-	//
-	
-	float occlusion = 0.0f;
-	//if(distZ > g_surface_epsilon)
-	{
-	//	float fadeLength = gOcclusionFadeEnd - gOcclusionFadeStart;
-		
-		// Linearly decrease occlusion from 1 to 0 as distZ goes 
-		// from gOcclusionFadeStart to gOcclusionFadeEnd.	
-	//	occlusion = saturate( (gOcclusionFadeEnd-distZ)/fadeLength );
-	}
-	
-	return occlusion;	
-}
-float3 get_position_from_uv_mipmapped(in float2 uv, in BSAO_S bsao, in int miplevel)
-{
-    float3 uvtoviewADD = float3(-1.0,-1.0,1.0);
-    float3 uvtoviewMUL = float3(2.0,2.0,0.0);
-    return (uv.xyx * uvtoviewMUL + uvtoviewADD) * tex2Dlod(sampler_tex_depth, float4(uv.xyx, miplevel)).x;
-}
+
 //////////////////////////////////////////////////////
 /* Vertex Shader*/
 //////////////////////////////////////////////////////
@@ -203,7 +162,9 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
 
 
 
-    float2 samples[26] = {       float2(0.03491, 0.04310),
+    float2 samples[27] = {       
+                            float2(0.00091, 0.000010),
+                            float2(0.03491, 0.04310),
                             float2(0.07913, 0.04670),
                             float2(0.19996, 0.08449),
                             float2(0.18446, 0.15253),
@@ -235,14 +196,14 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
 
  
     ////////////////////////////////////////////////////////
-    float ao =0;
+    float ao = 0;
 
 
     //////////////////////////////////////////////////////////
     //Get normal from the texcoord
     ////////////////////////////////////////////////////////
 
-    float3 normal = normalize(tex2D(sampler_tex_corrected_depth, bsao.texcoord));
+    float3 normal = normalize(tex2D(sampler_tex_normal, bsao.texcoord));
 
     //Samples are used to cast "rays"
 
@@ -250,18 +211,20 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
     for (int i = 0; i < num_of_samples; i++){
         
         
+        float2 random_vec = PseudoRandomVec(bsao.texcoord) * ray_radius;
+        //float2 scaled_sample = float2(samples[i].x * ReShade::PixelSize.x , samples[i].y * ReShade::PixelSize.y) ;
+        float2 scaled_sample = float2(random_vec.x * ReShade::PixelSize.x , random_vec.y * ReShade::PixelSize.y) ;
 
-        float2 scaled_sample = float2(samples[i].x * ReShade::PixelSize.x , samples[i].y * ReShade::PixelSize.y) ;
         float2 sample_point_pos = (bsao.texcoord.xy + scaled_sample)  ;
         float2 sample_point_neg = (bsao.texcoord.xy - scaled_sample) * 1/(i+1) ;
 
         //Check distance and angle
 
 
-        float3 first_normal_mod = (tex2D(sampler_tex_corrected_depth, sample_point_pos));
-        float3 second_normal_mod = (tex2D(sampler_tex_corrected_depth, sample_point_neg));
+        float3 first_normal_mod = (tex2D(sampler_tex_normal, sample_point_pos));
+        float3 second_normal_mod = (tex2D(sampler_tex_depth, sample_point_neg));
 
-
+        //todo need to check angle
         if (normal.z < first_normal_mod.z + bias){
             ao++;
         }
@@ -273,73 +236,6 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
     }
     ao /= num_of_samples;
     target = pow(ao,strength);
-    target.a = 1;
-
-
-   /* float3 samples[6] = {float3(0,1f,0),
-                            float3(-1f,0,0),
-                            float3(0f,0f,1f),
-                            float3(-1f,1f,1f),
-                            float3(1f,0,1f),
-                            float3(1f,1f,0f)}; 
- */
-
-    
-/*     //float3 samples[2] = {float3(0f,0f,0f), float3(0f,0.01f,0.0f)};
-
-    float horizontal_fov = vertical_fov * ReShade::AspectRatio;
-    float PI = 3.14159265359f;
-    float vertical_fov_rad = vertical_fov * PI/180;
-    float horizontal_fov_rad = horizontal_fov * PI/180;
-    float h, w, Q;
-
-    w = (float)1/tan(horizontal_fov_rad*0.5);  // 1/tan(x) == cot(x)
-    h = (float)1/tan(vertical_fov_rad*0.5);   // 1/tan(x) == cot(x)
-    Q = z_far/(z_far - z_near);
-
-    float4x4 proj_mat = float4x4(float4(w,0,0,0),
-                            float4(0,h,0,0),
-                            float4(0,0,Q,1),
-                            float4(0,0, -Q*z_near,0));
-
-    float3 position = tex2D(sampler_tex_depth, bsao.position.xy).rrr;
-    float3 normal = tex2D(sampler_tex_normal, bsao.texcoord);
-
-    float3 T , B, N; // Determine tangent s pac e
-    float3 rvec = tex2D(sampler_tex_backbuffer, position.xy/2 * noise).xyz; // Picks random vector to orient the hemisphere
-    float3 tangent = normalize(rvec - normal * dot(rvec, normal));
-    float3 bitangent = cross(normal, tangent);
-    float3x3 tbn = float3x3(tangent, bitangent, normal); // f: Tangent -> View space
-
-    float ao = 0;
-    float R = 2f;    
-
-    for(int k = 0; k < num_of_samples; k++) {
-
-        float3 sample_pos = mul(tbn, samples[k]) ;
-        sample_pos = position.xyz + sample_pos * radius;
-
-        float4 converted_sample_pos = float4(sample_pos.x, sample_pos.y, sample_pos.z, 0);
-        converted_sample_pos = mul(proj_mat, converted_sample_pos);
-        converted_sample_pos.xyz /= converted_sample_pos.w;
-        converted_sample_pos.xyz = converted_sample_pos.xyz * 0.5 + 0.5;    // transform to range 0.0 - 1.0  
-
-        float point_depth = tex2D(sampler_tex_depth, converted_sample_pos.xy).r;
-
-        if (point_depth >= converted_sample_pos.z + bias ){
-            ao++;
-        }
-
-    }
-
-    ao /=num_of_samples; */
-
-    
-
-
- /*    
-    float samples[10] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f};
- */
   
 }
 
