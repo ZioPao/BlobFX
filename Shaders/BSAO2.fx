@@ -5,44 +5,47 @@
 
 //Parameters
 
-uniform int num_of_samples = 3;
-uniform float noise_amount = 1f;
-uniform float radius = 2f;
-uniform float ao_clamp = 0.125f;
-uniform float gauss_bell_center = 0.4f; //gauss bell center //0.4
-uniform float diff_area = 0.3f; //self-shadowing reduction
-// uniform float ray_length = 2;
-// uniform float rad = 0.45f;
-uniform float ao_strength = 2f;
+uniform int num_of_samples = 2;
+//uniform float g_surface_epsilon = 1f;
+uniform float bias = 1f;
+uniform float gOcclusionFadeEnd = 100;
+////uniform float gOcclusionFadeStart = 0;
+// uniform float noise_amount = 1f;
+uniform float radius = 1f;
+// uniform float ao_clamp = 0.125f;
+// uniform float gauss_bell_center = 0.4f; //gauss bell center //0.4
+// uniform float diff_area = 0.3f; //self-shadowing reduction
+// // uniform float ray_length = 2;
+// // uniform float rad = 0.45f;
+// uniform float ao_strength = 2f;
+uniform float strength = 1f;
+uniform float occlusion_factor = 1f;
 uniform float distance = 0.5f;      //ok
-uniform float blend = 0.1f;
+// uniform float blend = 0.1f;
 uniform float lumInfluence = 0.7f; //how much luminance affects occlusion
 
+uniform float noise = 1;
+
+uniform float vertical_fov = 59f;
+
+
+
+uniform float z_near = 1f;
+uniform float z_far = 100f;
+
+// uniform float bias = 0f;
 //Structs
 struct BSAO_S{
+
+    /*It is a position in clip space in vertex shader and screen space position in pixel shader*/
     uint id : SV_VERTEX_ID;         //id of the current vertex
-    float4 vpos : SV_POSITION;      //Screen Space Coordinates
-    float2 texcoord : TEXCOORD;     //Main one
+    float4 position : SV_POSITION;      //View space?
+    float2 texcoord : TEXCOORD;     //Screen Space, everything is displayed
+
+        
+
 
 };
-
-//Constants
-// static const float3 samples[14] =
-// {       float3(1, 0, 0),
-//         float3(	-1, 0, 0),
-//         float3(0, 1, 0),
-//         float3(0, -1, 0),
-//         float3(0, 0, 1),
-//         float3(0, 0, -1),
-//         float3(1, 1, 1),
-//         float3(-1, 1, 1),
-//         float3(1, -1, 1),
-//         float3(1, 1, -1),
-//         float3(-1, -1, 1),
-//         float3(-1, 1, -1),
-//         float3(1, -1, -1),
-//         float3(-1, -1, -1)
-//      };         
 
 //Samplers
 texture2D tex_depth 	{ Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA8; };
@@ -78,59 +81,76 @@ float3 GetScreenSpaceNormal(float2 texcoord)
 }
 
 
-float CompareDepths(float depth_1, float depth_2){
-
-    float area = 2f;
-
-    float diff = (depth_1 - depth_2) * 100.0f;
-
-    if (diff < gauss_bell_center){
-        area = diff_area;
-    }
-
-    float gauss = pow(2.7182, -2.0*(diff - gauss_bell_center) * (diff - gauss_bell_center)/(area*area));
-    return gauss;
-}
+float3 PseudoRandomVec(float3 coord){
 
 
-bool CompareDepthsFar(float depth_1, float depth_2){
+    float x = frac(sin(dot(coord.x, float2(12.9898, 78.233))) * 43758.5453);
+    float y = frac(sin(dot(coord.y, float2(12.9898, 78.233))) * 43758.5453);
+    float z = frac(sin(dot(coord.z, float2(12.9898, 78.233))) * 43758.5453);
 
-    float area = 2f;
+    return saturate(float3(x, y, z));
 
-    float diff = (depth_1 - depth_2) * 100.0f;
 
-    if (diff > gauss_bell_center)
-        return true;
-    else
-        return false;
 
 }
-
-float2 rand_noise(float2 coord) //generating noise/pattern texture for dithering
+// Determines how much the sample point q occludes the point p as a function
+// of distZ.
+float OcclusionFunction(float distZ)
 {
-  float noiseX = ((frac(1.0-coord.x*(ReShade::PixelSize.x/2.0))*0.25)+(frac(coord.y*(ReShade::PixelSize.y/2.0))*0.75))*2.0-1.0;
-  float noiseY = ((frac(1.0-coord.x*(ReShade::PixelSize.x/2.0))*0.75)+(frac(coord.y*(ReShade::PixelSize.y/2.0))*0.25))*2.0-1.0;
-
-noiseX = clamp(frac(sin(dot(coord ,float2(12.9898,78.233))) * 43758.5453),0.0,1.0)*2.0-1.0;
-noiseY = clamp(frac(sin(dot(coord ,float2(12.9898,78.233)*2.0)) * 43758.5453),0.0,1.0)*2.0-1.0;
-  
-  return float2(noiseX,noiseY) * noise_amount;
+	//
+	// If depth(q) is "behind" depth(p), then q cannot occlude p.  Moreover, if 
+	// depth(q) and depth(p) are sufficiently close, then we also assume q cannot
+	// occlude p because q needs to be in front of p by Epsilon to occlude p.
+	//
+	// We use the following function to determine the occlusion.  
+	// 
+	//
+	//       1.0     -------------\
+	//               |           |  \
+	//               |           |    \
+	//               |           |      \ 
+	//               |           |        \
+	//               |           |          \
+	//               |           |            \
+	//  ------|------|-----------|-------------|---------|--> zv
+	//        0     Eps          z0            z1        
+	//
+	
+	float occlusion = 0.0f;
+	//if(distZ > g_surface_epsilon)
+	{
+	//	float fadeLength = gOcclusionFadeEnd - gOcclusionFadeStart;
+		
+		// Linearly decrease occlusion from 1 to 0 as distZ goes 
+		// from gOcclusionFadeStart to gOcclusionFadeEnd.	
+	//	occlusion = saturate( (gOcclusionFadeEnd-distZ)/fadeLength );
+	}
+	
+	return occlusion;	
 }
-
-
-
+float3 get_position_from_uv_mipmapped(in float2 uv, in BSAO_S bsao, in int miplevel)
+{
+    float3 uvtoviewADD = float3(-1.0,-1.0,1.0);
+    float3 uvtoviewMUL = float3(2.0,2.0,0.0);
+    return (uv.xyx * uvtoviewMUL + uvtoviewADD) * tex2Dlod(sampler_tex_depth, float4(uv.xyx, miplevel)).x;
+}
 //////////////////////////////////////////////////////
-/* Vertex Shaders*/
+/* Vertex Shader*/
 //////////////////////////////////////////////////////
 
 BSAO_S BSAO_VS(in uint id : SV_VertexID)
 {
+
+    /* vpos is directly affected by texcoord, and so is 
+    texcoord directly affected by vpos for some reasons */
     BSAO_S bsao;
+    float2 madd=float2(0.5f,0.5f);
 
 	bsao.texcoord.x = (id == 2) ? 2.0 : 0.0;
 	bsao.texcoord.y = (id == 1) ? 2.0 : 0.0;
-	bsao.vpos = float4(bsao.texcoord.xy * float2(2, -2) + float2(-1, 1), 0, 1);
 
+	bsao.position = float4(bsao.texcoord.xy * float2(2, -2) + float2(-1, 1) , 0, 1);
+   //bsao.position.xy *=  madd + madd;
 
     return bsao;
 };
@@ -142,184 +162,97 @@ BSAO_S BSAO_VS(in uint id : SV_VertexID)
 void BufferPreparationPass_PS(in BSAO_S bsao, out float4 back_buffer : SV_TARGET0, out float4 depth : SV_TARGET1, out float4 normal : SV_TARGET2)
 {
     back_buffer = tex2D(ReShade::BackBuffer, bsao.texcoord.xy).rgba;
-    depth = ReShade::GetLinearizedDepth(bsao.texcoord.xy).rrrr;
-    normal = GetScreenSpaceNormal(bsao.texcoord.xy).rgb;
+    depth.rgb = ReShade::GetLinearizedDepth(bsao.texcoord.xy).r;
+    normal.rgb = GetScreenSpaceNormal(bsao.texcoord.xy).rgb;
     
-
 }
 
 /* Check distance for the depth and then discards it if it exceeds it */
 void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET0){
 
     float temp_depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
-
      if (temp_depth > distance){
          discard;
      }
-     corrected_depth = 1;
+     corrected_depth.rgb = temp_depth.rrr;
+     corrected_depth.a = 1;
 }
 
 void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
+    
+       float3 samples[6] = {float3(4.01521, 2.02447, 1.09449),
+                        float3(3.03491, 2.04310, 4.01063),
+                        float3(2.07913, 1.04670, 0.07554),
+                        float3(1.09996, 3.08449, 0.00183),
+                        float3(5.08446, 0.05253, 0.03900),
+                        float3(2.03799, 0.09218, 0.05440),};   
 
 
-    //   static const float3 samples[3] =
-    //  {
-    //      //Closer and then more distant
-    //      float3(0.9958, -0.853, -0.434),
-    //      float3(-0.5152, +0.41248, 0.503),
-    //      float3(0.34, 0.123, 0.552)};
-
-    float PI = 3.14159265f;
-    float dl = PI * (3.0 - sqrt(5.0));    
-    float dz = 1/num_of_samples;
-    float l = 0;
-    float z = 1 - dz/2;         //Wut
+/*      float3 samples[6] = {float3(0,1f,0),
+                            float3(-1f,0,0),
+                            float3(0f,0f,1f),
+                            float3(-1f,1f,1f),
+                            float3(1f,0,1f),
+                            float3(1f,1f,0f)};  */
 
 
-    float normal = tex2D(sampler_tex_normal, bsao.texcoord.xy).r;
 
-    float temp_1 = 0f;
-    float temp_2 = 0f;;
-    float dd = (1.0-normal)*radius;
-    float2 noise_var = rand_noise(bsao.texcoord);
+    //float3 samples[2] = {float3(0f,0f,0f), float3(0f,0.01f,0.0f)};
 
+    float weigth[6] = {1f,0.9f,0.8f,0.7f,0.6f,0.5f};
+    float horizontal_fov = vertical_fov * ReShade::AspectRatio;
+    float PI = 3.14159265359f;
+    float vertical_fov_rad = vertical_fov * PI/180;
+    float horizontal_fov_rad = horizontal_fov * PI/180;
+    float h, w, Q;
 
-    for (int i = 0; i < num_of_samples; i++){
-        float r = sqrt(1.0 - z);
-        float pw = cos(l) * r;
-        float ph = sin(l) * r;
-        
-        float w = (1.0 / ReShade::PixelSize.x)/clamp(normal,ao_clamp,1.0)+(noise_var.x*(1.0-noise_var.x));
-        float h = (1.0 / ReShade::PixelSize.y)/clamp(normal,ao_clamp,1.0)+(noise_var.y*(1.0-noise_var.y));
-        float mod_w = pw*w*dd;
-        float mod_h = ph*h*dd;
+    w = (float)1/tan(horizontal_fov_rad*0.5);  // 1/tan(x) == cot(x)
+    h = (float)1/tan(vertical_fov_rad*0.5);   // 1/tan(x) == cot(x)
+    Q = z_far/(z_far - z_near);
 
+    float4x4 proj_mat = float4x4(float4(w,0,0,0),
+                            float4(0,h,0,0),
+                            float4(0,0,Q,1),
+                            float4(0,0, -Q*z_near,0));
 
-       
-        float2 coord_1 = float2(bsao.texcoord.x + mod_w, bsao.texcoord.y + mod_h);
-        float2 coord_2 = float2(bsao.texcoord.x - mod_w, bsao.texcoord.y - mod_h);
+    float3 position = tex2D(sampler_tex_depth, bsao.position.xy).rrr;
+    float3 normal = tex2D(sampler_tex_normal, bsao.texcoord);
 
+    float3 T , B, N; // Determine tangent s pac e
+    float3 rvec = tex2D(sampler_tex_backbuffer, position.xy/2 * noise).xyz; // Picks random vector to orient the hemisphere
+    float3 tangent = normalize(rvec - normal * dot(rvec, normal));
+    float3 bitangent = cross(normal, tangent);
+    float3x3 tbn = float3x3(tangent, bitangent, normal); // f: Tangent -> View space
 
-        float depth_1 = tex2D(sampler_tex_normal, coord_1);
-        float depth_2 = tex2D(sampler_tex_normal, coord_2);
+    ao = 0;
+    float R = 2f;    
 
+    for(int k = 0; k < num_of_samples; k++) {
 
-        if (CompareDepthsFar(depth_2, depth_1)){
-            temp_2 = CompareDepths(depth_2, depth_1);
-            temp_1 += (1.0f - temp_1)*temp_2;
-            ao += temp_1;
+        float3 sample_pos = mul(tbn, samples[k]) ;
+        sample_pos = position.xyz + sample_pos * radius;
+
+        float4 converted_sample_pos = float4(sample_pos.x, sample_pos.y, sample_pos.z, 0);
+        converted_sample_pos = mul(proj_mat, converted_sample_pos);
+        converted_sample_pos.xyz /= converted_sample_pos.w;
+        converted_sample_pos.xyz = converted_sample_pos.xyz * 0.5 + 0.5;    // transform to range 0.0 - 1.0  
+
+        float point_depth = tex2D(sampler_tex_depth, converted_sample_pos.xy).r;
+
+        if (point_depth >= converted_sample_pos.z + bias ){
+            ao++;
         }
-        
-        z = z - dz;
-        l = l + dl;
-
-       // ao += tex2D(sampler_tex_normal, bsao.vpos.xy);
 
     }
 
-
-    ao /= num_of_samples;
-    ao *= ao_strength;
-    ao = 1 - ao;
+    ao /=num_of_samples;
     ao.a = 1;
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    /////////////////////////////////////////////////////////////////////////
-    //Calculate near points in the normal and search for collisions
-
-    //     //  float3(0.33, 0.33, 0.33),
-    //     // float3(0.152, -0.231, -0.124),
-    //     // float3(0.21, -0.75, 1),
-    //     // float3(-0.14, 0.54, -0.021),
-    //     // normalize(float3(0.5, 0.2, -1.1)),
-    //     // normalize(float3(-1, 1, 1)),
-    //     // normalize(float3(1, -1, 1)),
-    //     // normalize(float3(1, 1, -1)),
-    //     // normalize(float3(-1, -1, 1)),
-    //     // normalize(float3(-1, 1, -1)),
-    //     // normalize(float3(1, -1, -1)),
-    //     // normalize(float3(-1, -1, -1))
-    // };
-
-    // ao = 0;
-
-    // float3 current_pos = bsao.vpos.xyz;
-    
-
-
-    // float depth = tex2D(sampler_tex_depth, bsao.texcoord.xy).r;
-
-    // float3 p = (depth/bsao.vpos.z)*bsao.vpos;
-
-    // float4 normal = tex2D(sampler_tex_normal, bsao.texcoord.xy);
-
-    // //First check to eliminate the sky or sup like that
-    // if (normal.a < 1){
-
-    //     //check on the normal with a "random" ray
-    //     for (int i = 0; i < num_of_samples; i++){
-    //         float3 ray = samples[i] - 3;
-    //         //ray = dot(ray, float3(-0.5f,-0.5f,0.12f));
-    //         ao += tex2D(sampler_tex_normal, -bsao.texcoord.xy + ray.xz).rrr;
-    //     }
-
-    // }
-
-    // ao = p;
-
-    
-/*
-    float3 corrected_depth = tex2D(sampler_tex_corrected_depth, bsao.texcoord.xy).rrr;
-    float3 normal_fixed = corrected_depth - normal.rrr; 
-
-    for (int i = 0; i < num_of_samples; i++){
-
-        float4 sample_pos = float4(current_pos +samples[i], 1f);
-        sample_pos.z = normal * sample_pos;
-        sample_pos.xy /= sample_pos.w;
-        sample_pos.xy = sample_pos.xy * 0.5 + float2(0.5f, 0.5f);
-        float sample_depth = tex2D(sampler_tex_depth, sample_pos.xy).r;
-
-        if (abs(bsao.vpos.z - sample_depth) < rad) {
-            ao += step(sample_depth,sample_pos.z);
-        }
-        // float3 incident_ray = saturate(reflect(samples[i], normal_fixed) * ray_length);
-        // float3 shitty_test = tex2D(sampler_tex_corrected_depth, (bsao.texcoord.xz * ReShade::PixelSize.x)  + incident_ray.xz).rrr;
-
-
-        // // We need a random vector to reflect on
-        // float3 ray = reflect(samples[i], normal_fixed);
-        // float3 normal_result = dot(ray * ray_length, normal_fixed);
-        // float z_result = saturate(corrected_depth - normal_fixed).z * ray.xyz;
-        // temp_ao -= pow(normal_result, ao_strength);
-       
-    }
-
-    ao = pow(ao,4).r;
-
-*/
-    //ao = 1;
-   // ao.a = 1;
-    // ao = pow(ao,ao_strength);
-    // ao /= num_of_samples;
-    // ao.a = 1;
+ /*    
+    float samples[10] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f};
+ */
+  
 }
 
 
@@ -333,20 +266,9 @@ void FinalPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET){
     float lum = dot(target.rgb, lumcoeff);
     float3 luminance = float3(lum, lum, lum);
 
-
+    //This is the magic part
     float4 mixed_result = float4(lerp (float3(ao.rrr), float3(1,1,1), luminance*lumInfluence),1);
     target = target * mixed_result;
-    //target = float4(target*lerp(float3(ao),float3(1.0),),1);//mix(color*ao, white, luminance)
-
-
-
-
-
-
-    // //ao = pow(ao.rgb, 1.2);
-    
-     //target.rgb = saturate(lerp(target.rgb, -saturate(ao.r), blend));
-
 
 }
 
@@ -359,22 +281,27 @@ technique BSAO2 {
         RenderTarget1 = tex_depth;
         RenderTarget2 = tex_normal;
     }
-      pass{
-         VertexShader = BSAO_VS;
-          PixelShader = DepthDistancePass_PS;
-          RenderTarget0 = tex_corrected_depth;
-          ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
-		
-    }
+       pass{
+        VertexShader = BSAO_VS;
+        PixelShader = DepthDistancePass_PS;
+        RenderTarget0 = tex_corrected_depth;
+        ClearRenderTargets = true;      //Needed to clear stuff in tex_corrected_depth
+        StencilEnable = true;
+		StencilPass = REPLACE;
+        StencilRef = 1;
+    } 
      pass{
-         VertexShader = BSAO_VS;
-         PixelShader = AoPreparationPass_PS;
-         RenderTarget0 = tex_ao;
+        VertexShader = BSAO_VS;
+        PixelShader = AoPreparationPass_PS;
+        RenderTarget0 = tex_ao;
+        StencilEnable = true;
+		StencilPass = KEEP;
+        StencilRef = 1;
      } 
 
-     pass{
-         VertexShader = BSAO_VS;
-         PixelShader = FinalPass_PS;
+      pass{
+          VertexShader = BSAO_VS;
+          PixelShader = FinalPass_PS;
 
-     }
+      }
 }
