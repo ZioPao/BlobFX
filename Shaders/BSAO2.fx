@@ -40,7 +40,7 @@ struct BSAO_S{
     /*It is a position in clip space in vertex shader and screen space position in pixel shader*/
     uint id : SV_VERTEX_ID;         //id of the current vertex
     float4 position : SV_POSITION;      //View space?
-    float2 texcoord : TEXCOORD;     //Screen Space, everything is displayed
+    float2 texcoord : TEXCOORD;     //texcoord = the currently processed pixel
 
         
 
@@ -178,26 +178,71 @@ void DepthDistancePass_PS(in BSAO_S bsao, out float4 corrected_depth : SV_TARGET
      corrected_depth.a = 1;
 }
 
-void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
-    
-       float3 samples[6] = {float3(4.01521, 2.02447, 1.09449),
-                        float3(3.03491, 2.04310, 4.01063),
-                        float3(2.07913, 1.04670, 0.07554),
-                        float3(1.09996, 3.08449, 0.00183),
-                        float3(5.08446, 0.05253, 0.03900),
-                        float3(2.03799, 0.09218, 0.05440),};   
+void AoPreparationPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET0){
 
 
-/*      float3 samples[6] = {float3(0,1f,0),
+
+
+/*
+1) Use texcoord as base to cast some samples starting from it
+2) for each sample, check the depth and determines if ao is ++ or not
+    Now, ao++ is a float4 and it doesn't make a lot of sense
+
+*/
+ 
+       float3 samples[6] = {float3(0.01521, 0.12447, 0.09449),
+                        float3(0.03491, 0.04310, 0.01063),
+                        float3(0.07913, 0.04670, 0.07554),
+                        float3(0.29996, 0.08449, 0.10183),
+                        float3(0.18446, 0.25253, 0.03900),
+                        float3(0.03799, 0.09218, 0.15440),};   
+
+
+    /* float3 samples[6] = {float3(0,1f,0),
                             float3(-1f,0,0),
                             float3(0f,0f,1f),
                             float3(-1f,1f,1f),
                             float3(1f,0,1f),
-                            float3(1f,1f,0f)};  */
+                            float3(1f,1f,0f)}; 
+ */
+
+    
+    ////////////////////////////////////////////////////////
+    float ao = 0;
+
+
+    //////////////////////////////////////////////////////////
+    //Get normal from the texcoord
+    ////////////////////////////////////////////////////////
+
+    float3 normal = tex2D(sampler_tex_normal, bsao.texcoord);
+
+    //Samples are used to cast "rays"
+
+
+    for (int i = 0; i < num_of_samples; i++){
+
+        float2 sample_point_pos = (bsao.texcoord.xy + samples[i].xy);
+        float2 sample_point_neg = (bsao.texcoord.xy - samples[i].xy);
+
+        //Check distance and angle
+
+
+        float3 normal_mod = tex2D(sampler_tex_corrected_depth, normalize(sample_point_pos));
+
+
+        if (normal.z < normal_mod.z + bias){
+            ao++;
+        }
+
+
+    }
+    ao /= num_of_samples;
+    target = ao;
 
 
 
-    //float3 samples[2] = {float3(0f,0f,0f), float3(0f,0.01f,0.0f)};
+/*     //float3 samples[2] = {float3(0f,0f,0f), float3(0f,0.01f,0.0f)};
 
     float weigth[6] = {1f,0.9f,0.8f,0.7f,0.6f,0.5f};
     float horizontal_fov = vertical_fov * ReShade::AspectRatio;
@@ -224,7 +269,7 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
     float3 bitangent = cross(normal, tangent);
     float3x3 tbn = float3x3(tangent, bitangent, normal); // f: Tangent -> View space
 
-    ao = 0;
+    float ao = 0;
     float R = 2f;    
 
     for(int k = 0; k < num_of_samples; k++) {
@@ -245,8 +290,9 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 
     }
 
-    ao /=num_of_samples;
-    ao.a = 1;
+    ao /=num_of_samples; */
+
+    
 
 
  /*    
@@ -259,14 +305,12 @@ void AoPreparationPass_PS(in BSAO_S bsao, out float4 ao : SV_TARGET0){
 void FinalPass_PS(in BSAO_S bsao, out float4 target : SV_TARGET){
 
     target = tex2D(sampler_tex_backbuffer, bsao.texcoord.xy);
-
     float ao = tex2D(sampler_tex_ao, bsao.texcoord.xy).r;
-
     float3 lumcoeff = float3(0.299,0.587,0.114);
     float lum = dot(target.rgb, lumcoeff);
     float3 luminance = float3(lum, lum, lum);
 
-    //This is the magic part
+    // //This is the magic part
     float4 mixed_result = float4(lerp (float3(ao.rrr), float3(1,1,1), luminance*lumInfluence),1);
     target = target * mixed_result;
 
