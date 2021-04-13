@@ -1,2 +1,8 @@
 
 Shaders/xhair.fx
+Shaders/Artifacts.fx
+Shaders/BadMotionBlur.fx
+Shaders/BSAO.fx
+Shaders/BSAO2.fx
+Shaders/ReShade.fxh
+Shaders/ShittyGaussianBlur.fx
