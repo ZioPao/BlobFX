@@ -17,15 +17,11 @@ http://creativecommons.org/licenses/by-sa/4.0/.
 
 
 
-uniform bool stillShot <
 
-ui_label = "Still Shot Mode";
-
-
-> = false;
 
 uniform float scanlineSize <
 	ui_type = "drag";
+	ui_category = "Camera";    
 	ui_label = "Scanline Size";
 	ui_min = 0.0f; ui_max = 20.0f;
 	ui_step = 2f;
@@ -34,23 +30,26 @@ uniform float scanlineSize <
 
 uniform float retentionOldFrame <
 	ui_type = "drag";
+	ui_category = "Camera";
 	ui_label = "Old Frame Retention";
 	ui_min = 0.0f; ui_max = 10.0f;
 	ui_step = 0.05f;
 
 > = 0.5f;
 
-
+uniform bool stillShot <
+  	ui_category = "Screenshots";    
+	ui_label = "Still Shot Mode";
+> = false;
 
 
 
 #ifndef ShaderAnalyzer
-uniform int FrameCount < source = "framecount"; >;
+	uniform int FrameCount < source = "framecount"; >;
 #endif
 
 // Previous frame render target buffer
 texture InterlacedTargetBuffer { Width = BUFFER_WIDTH/INTERLACED_RES_DIVIDE; Height = BUFFER_HEIGHT/INTERLACED_RES_DIVIDE; };
-texture BackBufferTargetBuffer { Width = BUFFER_WIDTH/INTERLACED_RES_DIVIDE; Height = BUFFER_HEIGHT/INTERLACED_RES_DIVIDE; };
 
 sampler InterlacedBufferSampler { Texture = InterlacedTargetBuffer;
 	MagFilter = POINT;
@@ -58,28 +57,14 @@ sampler InterlacedBufferSampler { Texture = InterlacedTargetBuffer;
 	MipFilter = POINT;
 };
 
- 
-
-
-
 void InterlacedTargetPass(float4 vpos : SV_Position, float2 UvCoord : TEXCOORD,
 out float4 Target : SV_Target)
 {
-	
-
-	float oddPixelScale = 1 / scanlineSize;		//only even
 
 	// Interlaced rows boolean
-	bool OddPixel = frac(int(ReShade::ScreenSize.y * UvCoord.y) * oddPixelScale) != 0; // * 
-	bool OddFrame;
-
-	if (!stillShot)
-		OddFrame = frac(FrameCount * 1.5f / retentionOldFrame) != 0;
-	else{
-		OddFrame = frac(FrameCount) != 0;	
-
-	}
-
+	bool OddPixel = frac(int(ReShade::ScreenSize.y * UvCoord.y) * (1/scanlineSize)) != 0;  
+	bool OddFrame = stillShot ? frac(FrameCount) != 0 : frac(FrameCount * 1.5f / retentionOldFrame) != 0;
+ 
 	bool BottomHalf = UvCoord.y > 0.5f;
 
 
@@ -99,22 +84,10 @@ out float4 Target : SV_Target)
 void InterlacedPS(float4 vpos : SV_Position, float2 UvCoord : TEXCOORD,
 out float3 Image : SV_Target)
 {
-	
-	
-	float oddPixelScale = 1 / scanlineSize;		//only even
-
 	// Interlaced rows boolean
-	bool OddPixel = frac(int(ReShade::ScreenSize.y * UvCoord.y) * oddPixelScale) != 0;
-	bool OddFrame ;
+	bool OddPixel = frac(int(ReShade::ScreenSize.y * UvCoord.y) * (1/scanlineSize)) != 0;
+	bool OddFrame = stillShot ? frac(FrameCount) != 0 : frac(FrameCount * 1.5f / retentionOldFrame) != 0;
 
-	if (!stillShot)
-		OddFrame = frac(FrameCount * 1.5f / retentionOldFrame) != 0;
-	else{
-		OddFrame = frac(FrameCount) != 0;	
-
-	}
-
-	
 	// Calculate coordinates of BackBuffer texture saved at previous frame
 	float2 Coordinates = float2(UvCoord.x, UvCoord.y * 0.5f);
 	float qPixelSizeY = ReShade::PixelSize.y * 0.25;
@@ -135,9 +108,9 @@ technique Interlaced
 		RenderTarget = InterlacedTargetBuffer;
 		ClearRenderTargets = false;
 		BlendEnable = true;
-			BlendOp = ADD; //mimic lerp
-				SrcBlend = SRCALPHA;
-				DestBlend = INVSRCALPHA;
+		BlendOp = ADD; 	//mimic lerp
+		SrcBlend = SRCALPHA;
+		DestBlend = INVSRCALPHA;		//Destination color. Pixel that already exists
 	}
 	pass
 	{
