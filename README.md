@@ -1,3 +1,3 @@
-# Paos--Shitty-Shaders
+# BlobFX
 
-Pretty much a repo for tests and shoddily made/modified shaders for ReShade.
+Anyone here ordered some shoddily coded shaders?
